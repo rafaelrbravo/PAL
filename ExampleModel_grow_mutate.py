@@ -1,7 +1,7 @@
 
-from AgentGrid import AgentGrid,SearchList
+from AgentGrid import AgentGrid,QueryList
 import numpy as np
-import PixWindow2 as PixWindow
+import PixWindow as PixWindow
 from numba import njit
 
 @njit
@@ -9,7 +9,7 @@ def Mutate(value,mutRate):
     return max(min(value+(np.random.random()-0.5)*2*mutRate,1.0),0.0)
 
 @njit
-def Step(g:AgentGrid,hood:SearchList,mutRate:float):
+def Step(g:AgentGrid,hood:QueryList,mutRate:float):
     for a in g.All(True): 
         g.MapHood2D(hood,g.XSQ(a),g.YSQ(a),0)
         iNew=hood.Random()
@@ -37,7 +37,7 @@ if __name__=="__main__":
     g.SetP(a0,0,0.5)
     g.SetP(a0,1,0.5)
     g.SetP(a0,2,0.5)
-    hood=SearchList()
+    hood=QueryList()
     hood.SetHood(2,[1,0,-1,0,0,1,0,-1])
     pix,win=PixWindow.StartPixWindow(500,500,2)
     flatPix=np.reshape(pix,(-1,3))

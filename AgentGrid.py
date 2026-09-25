@@ -16,15 +16,15 @@ support on-lattice
 support stackable
 """
 
-specSearchList=[('_mem', int32[:]),
+specQueryList=[('_mem', int32[:]),
                 ('_hood',int32[:]),
                 ('_hoodDim',int32),
                 ('_hoodLen',int32),
                 ('_length',int32)]
 
 #used to collect agents from spatial queries
-@jitclass(specSearchList)
-class SearchList(object):
+@jitclass(specQueryList)
+class QueryList(object):
     def __init__(self):
         self._length=0
         self._hoodDim=0
@@ -761,7 +761,7 @@ class AgentGrid(object):
         return out
 
 # returns an array containing all requested properties from searchlist
-    def SearchListProperties(self,searchList,requestedProperties):
+    def QueryListProperties(self,searchList,requestedProperties):
         requestedProperties=np.array(requestedProperties,dtype=int32)
         out=np.zeros((len(requestedProperties),len(searchList)),dtype=float32)
         for i in range(len(requestedProperties)):
