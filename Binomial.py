@@ -4,19 +4,17 @@ from numba.experimental import jitclass
 from numpy.random import rand
 import time
 
-mnSpec=[('_n',int32), 
+mnSpec=[('_n',int64), 
           ('_p',float64), 
-          ('_n_last',int32), 
-          ('_n_prev',int32),
+          ('_n_last',int64), 
+          ('_n_prev',int64),
           ('_par',float64),
           ('_np',float64),
-          ('_p0',float64),
           ('_q',float64),
           ('_p_last',float64),
           ('_p_prev',float64),
-          ('_b',int32),
-          ('_m',int32),
-          ('_nm',int32),
+          ('_m',int64),
+          ('_nm',int64),
           ('_pq',float64),
           ('_rc',float64),
           ('_ss',float64),
@@ -31,6 +29,18 @@ mnSpec=[('_n',int32),
           ('_p3',float64),
           ('_p4',float64),
           ('_ch',float64),
+          ('_br',float64),
+          ('_bnr',float64),
+          ('_bnpq',float64),
+          ('_bb',float64),
+          ('_ba',float64),
+          ('_bc',float64),
+          ('_balpha',float64),
+          ('_bvr',float64),
+          ('_burvr',float64),
+          ('_bm',int64),
+          ('_bn_last',int64),
+          ('_bp_last',float64),
           ('_stirlingCorrection',float64[:])
           ]
 
@@ -43,11 +53,9 @@ class Binomial(object):
         self._n_prev=-1
         self._par=0.0
         self._np=0.0
-        self._p0=0.0
         self._q=0.0
         self._p_last=-1.0
         self._p_prev=-1.0
-        self._b=0
         self._m=0
         self._nm=0
         self._pq=0.0
@@ -64,6 +72,18 @@ class Binomial(object):
         self._p3=0.0
         self._p4=0.0
         self._ch=0.0
+        self._br=0.0
+        self._bnr=0.0
+        self._bnpq=0.0
+        self._bb=0.0
+        self._ba=0.0
+        self._bc=0.0
+        self._balpha=0.0
+        self._bvr=0.0
+        self._burvr=0.0
+        self._bm=0
+        self._bn_last=-1
+        self._bp_last=-1.0
         self._stirlingCorrection=NP.array((0.0,
             8.106146679532726e-02, 4.134069595540929e-02,
             2.767792568499834e-02, 2.079067210376509e-02,
@@ -82,11 +102,20 @@ class Binomial(object):
             2.873449362352470e-03, 2.777674929752690e-03),dtype=NP.float64) 
 
     def Sample(self,n,p):
-        if p==1: return n
-        if p==0 or n==0: return 0
-        #if n<50:return self._CoinFlip(n,p)
-        if p<0.5 and n*p<30: return self._rk_binomial_inversion(n,p)
-        if p>=0.5 and n*(1-p)<30: return n-self._rk_binomial_inversion(n,(1-p))
+        if not NP.isfinite(n) or n<0 or n>9223372036854775807 or n!=NP.floor(n): raise Exception(f"n must be an integer between 0 and 9223372036854775807 n:{n}")
+        if not NP.isfinite(p) or p<0 or p>1: raise Exception(f"p must be between 0 and 1 p:{p}")
+        return self.Sample_(n,p)
+
+    def Sample_(self,n,p):
+        if p==1:return n
+        if p==0 or n==0:return 0
+        if n<=3:return self._CoinFlip(n,p)
+        q=1.0-p if p>0.5 else p
+        mean=NP.float64(n)*q
+        if mean<10.0:return NP.random.binomial(n,p)
+        if n<=68719476736:
+            ret=self._BTRD(n,q)
+            return n-ret if p>0.5 else ret
         return self._ColtInt(n,p)
 
     def _StirlingCorrection(self,k):
@@ -105,11 +134,67 @@ class Binomial(object):
         else:return self._stirlingCorrection[k]
 
 
+    def _BTRDFC(self,k):
+        if k<10:return self._stirlingCorrection[k+1]
+        x=1.0/(k+1.0)
+        x2=x*x
+        return (1.0/12.0-(1.0/360.0-(1.0/1260.0)*x2)*x2)*x
+
+    def _BTRD(self,n,p):
+        if n!=self._bn_last or p!=self._bp_last:
+            self._bn_last=n
+            self._bp_last=p
+            self._bm=NP.int64((NP.float64(n)+1.0)*p)
+            self._br=p/(1.0-p)
+            self._bnr=(NP.float64(n)+1.0)*self._br
+            self._bnpq=NP.float64(n)*p*(1.0-p)
+            s=NP.sqrt(self._bnpq)
+            self._bb=1.15+2.53*s
+            self._ba=-0.0873+0.0248*self._bb+0.01*p
+            self._bc=NP.float64(n)*p+0.5
+            self._balpha=(2.83+5.1/self._bb)*s
+            self._bvr=0.92-4.2/self._bb
+            self._burvr=0.86*self._bvr
+        while True:
+            v=rand()
+            if v<=self._burvr:
+                u=v/self._bvr-0.43
+                return NP.int64(NP.floor((2.0*self._ba/(0.5-NP.abs(u))+self._bb)*u+self._bc))
+            if v>=self._bvr:u=rand()-0.5
+            else:
+                u=v/self._bvr-0.93
+                u=(-0.5 if u<0 else 0.5)-u
+                v=rand()*self._bvr
+            us=0.5-NP.abs(u)
+            k=NP.int64(NP.floor((2.0*self._ba/us+self._bb)*u+self._bc))
+            if k<0 or k>n:continue
+            v=v*self._balpha/(self._ba/(us*us)+self._bb)
+            km=NP.abs(k-self._bm)
+            if km<=15:
+                f=1.0
+                if self._bm<k:
+                    i=self._bm
+                    while i!=k:
+                        i+=1
+                        f*=self._bnr/i-self._br
+                elif self._bm>k:
+                    i=k
+                    while i!=self._bm:
+                        i+=1
+                        v*=self._bnr/i-self._br
+                if v<=f:return k
+                continue
+            v=NP.log(v)
+            rho=(km/self._bnpq)*(((km/3.0+0.625)*km+1.0/6.0)/self._bnpq+0.5)
+            t=-km*km/(2.0*self._bnpq)
+            if v<t-rho:return k
+            if v>t+rho:continue
+            nm=n-self._bm+1
+            h=(self._bm+0.5)*NP.log((self._bm+1)/(self._br*nm))+self._BTRDFC(self._bm)+self._BTRDFC(n-self._bm)
+            nk=n-k+1
+            if v<=h+(NP.float64(n)+1.0)*NP.log(NP.float64(nm)/nk)+(k+0.5)*NP.log(NP.float64(nk)*self._br/(k+1))-self._BTRDFC(k)-self._BTRDFC(n-k):return k
+
     def _ColtInt(self,n, p) :
-        C1_3 = 0.3333333333333333
-        C5_8 = 0.625
-        C1_6 = 0.16666666666666666
-        #DMAX_KM = True
         i=0
         f=0.0
         if(n != self._n_last or p != self._p_last) :
@@ -121,122 +206,99 @@ class Binomial(object):
             if(self._np <= 0.0): return -1
 
             rm = self._np + self._par
-            self._m = NP.int32(rm)
-            if(self._np < 10.0):
-                self._p0 = NP.exp(NP.float64(n) * NP.log(self._q))
-                bh = NP.int32(self._np + 10.0 * NP.sqrt(self._np * self._q))
-                self._b = min(n, bh)
-            else:
-                self._pq = self._par / self._q
-                self._rc = (NP.float64(n) + 1.0) * self._pq
-                self._ss = self._np * self._q
-                i = NP.int32(2.195 * NP.sqrt(self._ss) - 4.6 * self._q)
-                self._xm = NP.float64(self._m) + 0.5
-                self._xl = NP.float64(self._m - i)
-                self._xr = NP.float64(NP.int64(self._m + i) + 1)
-                f = (rm - self._xl) / (rm - self._xl * self._par)
-                self._ll = f * (1.0 + 0.5 * f)
-                f = (self._xr - rm) / (self._xr * self._q)
-                self._lr = f * (1.0 + 0.5 * f)
-                self._c = 0.134 + 20.5 / (15.3 + NP.float64(self._m))
-                self._p1 = NP.float64(i) + 0.5
-                self._p2 = self._p1 * (1.0 + self._c + self._c)
-                self._p3 = self._p2 + self._c / self._ll
-                self._p4 = self._p3 + self._c / self._lr
+            self._m = NP.int64(rm)
+            self._pq = self._par / self._q
+            self._rc = (NP.float64(n) + 1.0) * self._pq
+            self._ss = self._np * self._q
+            i = NP.int64(2.195 * NP.sqrt(self._ss) - 4.6 * self._q)
+            self._xm = NP.float64(self._m) + 0.5
+            self._xl = NP.float64(self._m - i)
+            self._xr = NP.float64(NP.int64(self._m + i) + 1)
+            f = (rm - self._xl) / (rm - self._xl * self._par)
+            self._ll = f * (1.0 + 0.5 * f)
+            f = (self._xr - rm) / (self._xr * self._q)
+            self._lr = f * (1.0 + 0.5 * f)
+            self._c = 0.134 + 20.5 / (15.3 + NP.float64(self._m))
+            self._p1 = NP.float64(i) + 0.5
+            self._p2 = self._p1 * (1.0 + self._c + self._c)
+            self._p3 = self._p2 + self._c / self._ll
+            self._p4 = self._p3 + self._c / self._lr
 
         K=0
         U=0.0
-        if self._np < 10.0:
-            K = 0
-            pk = self._p0
-            U = rand()
-
-            while(U > pk):
-                K+=1
-                if(K > self._b):
-                    U = rand()
-                    K = 0
-                    pk = self._p0
-                else:
-                    U -= pk
-                    pk = NP.float64(n - K + 1) * self._par * pk / (NP.float64(K) * self._q)
-
-            if p>0.5: return n-K
-            else: return K
-        else:
+        while(1):
+            V=0.0
             while(1):
-                V=0.0
-                while(1):
-                    V = rand()
-                    U = rand() * self._p4
-                    if(U <= self._p1):
-                        K = NP.int32(self._xm - U + self._p1 * V)
-                        if p>0.5:return n-K
-                        else:return K
+                V = rand()
+                U = rand() * self._p4
+                if(U <= self._p1):
+                    K = NP.int64(self._xm - U + self._p1 * V)
+                    if p>0.5:return n-K
+                    else:return K
 
-                    X=0.0
-                    if(U <= self._p2):
-                        X = self._xl + (U - self._p1) / self._c
-                        V = V * self._c + 1.0 - NP.abs(self._xm - X) / self._p1
-                        if(V < 1.0):
-                            K = NP.int32(X)
-                            break
-                    elif(U <= self._p3):
-                        X = self._xl + NP.log(V) / self._ll
-                        if(X >= 0.0):
-                            K = NP.int32(X)
-                            V *= (U - self._p2) * self._ll
-                            break
-                    else:
-                        K = NP.int32(self._xr - NP.log(V) / self._lr)
-                        if(K<=n):
-                            V *= (U - self._p3) * self._lr
-                            break
-
-                Km = NP.abs(K - self._m)
-                if Km > 20 and NP.float64(NP.int64(Km + Km) + 2) < self._ss:
-                    V = NP.log(V)
-                    T = NP.float64(NP.float64(-Km * Km) / (self._ss + self._ss))
-                    E = NP.float64(Km) / self._ss * ((NP.float64(Km) * (NP.float64(Km) * 0.3333333333333333 + 0.625) + 0.16666666666666666) / self._ss + 0.5)
-                    if(V <= T - E):
+                X=0.0
+                if(U <= self._p2):
+                    X = self._xl + (U - self._p1) / self._c
+                    V = V * self._c + 1.0 - NP.abs(self._xm - X) / self._p1
+                    if(V < 1.0):
+                        K = NP.int64(X)
+                        break
+                elif(U <= self._p3):
+                    X = self._xl + NP.log(V) / self._ll
+                    if(X >= 0.0):
+                        K = NP.int64(X)
+                        V *= (U - self._p2) * self._ll
+                        break
+                else:
+                    K = NP.int64(self._xr - NP.log(V) / self._lr)
+                    if(K<=n):
+                        V *= (U - self._p3) * self._lr
                         break
 
-                    if(V <= T + E):
-                        if(n != self._n_prev or self._par != self._p_prev):
-                            self._n_prev = n
-                            self._p_prev = self._par
-                            self._nm = n - self._m + 1
-                            self._ch = self._xm * NP.log((NP.float64(self._m) + 1.0) / (self._pq * NP.float64(self._nm))) + self._StirlingCorrection(self._m + 1) + self._StirlingCorrection(self._nm)
+            Km = NP.abs(K - self._m)
+            if Km > 20 and NP.float64(NP.int64(Km + Km) + 2) < self._ss:
+                V = NP.log(V)
+                T = NP.float64(NP.float64(-Km * Km) / (self._ss + self._ss))
+                E = NP.float64(Km) / self._ss * ((NP.float64(Km) * (NP.float64(Km) * 0.3333333333333333 + 0.625) + 0.16666666666666666) / self._ss + 0.5)
+                if(V <= T - E):
+                    break
 
-                        nK = NP.int32(n - K + 1)
-                        if(V <= self._ch + (NP.float64(n) + 1.0) * NP.log(NP.float64(self._nm) / NP.float64(nK)) + (NP.float64(K) + 0.5) * NP.log(NP.float64(nK) * self._pq / (NP.float64(K) + 1.0)) - self._StirlingCorrection(K + 1) - self._StirlingCorrection(nK)):
+                if(V <= T + E):
+                    if(n != self._n_prev or self._par != self._p_prev):
+                        self._n_prev = n
+                        self._p_prev = self._par
+                        self._nm = n - self._m + 1
+                        self._ch = self._xm * NP.log((NP.float64(self._m) + 1.0) / (self._pq * NP.float64(self._nm))) + self._StirlingCorrection(self._m + 1) + self._StirlingCorrection(self._nm)
+
+                    nK = NP.int64(n - K + 1)
+                    if(V <= self._ch + (NP.float64(n) + 1.0) * NP.log(NP.float64(self._nm) / NP.float64(nK)) + (NP.float64(K) + 0.5) * NP.log(NP.float64(nK) * self._pq / (NP.float64(K) + 1.0)) - self._StirlingCorrection(K + 1) - self._StirlingCorrection(nK)):
+                        break
+            else:
+                f = 1.0
+                if self._m < K:
+                    i = self._m
+
+                    while(i < K):
+                        i+=1
+                        f *= self._rc / NP.float64(i) - self._pq
+                        if(f < V):
                             break
                 else:
-                    f = 1.0
-                    if self._m < K:
-                        i = self._m
+                    i = K
 
-                        while(i < K):
-                            i+=1
-                            f *= self._rc / NP.float64(i) - self._pq
-                            if(f < V):
-                                break
-                    else:
-                        i = K
+                    while(i < self._m):
+                        i+=1
+                        V *= self._rc / NP.float64(i) - self._pq
+                        if(V > f):
+                            break
 
-                        while(i < self._m):
-                            i+=1
-                            V *= self._rc / NP.float64(i) - self._pq
-                            if(V > f):
-                                break
+                if(V <= f):
+                    break
 
-                    if(V <= f):
-                        break
+        if p > 0.5:return n - K
+        else:return K
 
-            if p > 0.5:return n - K
-            else:return K
-
-    def _CoinFlip(n,p):
+    def _CoinFlip(self,n,p):
             total=0
             for i in range(n):
                 if rand()<p:
@@ -268,17 +330,25 @@ class Binomial(object):
         return X
 
     def SetupMulti(self,n):
+        if not NP.isfinite(n) or n<0 or n>9223372036854775807 or n!=NP.floor(n): raise Exception(f"n must be an integer between 0 and 9223372036854775807 n:{n}")
+        self.SetupMulti_(n)
+
+    def SetupMulti_(self,n):
         self._n=n
         self._p=1
 
     def SampleMulti(self,p):
+        if not NP.isfinite(p) or p<0 or p>self._p+1e-12: raise Exception(f"p must be between 0 and remaining probability {self._p} p:{p}")
+        return self.SampleMulti_(p)
+
+    def SampleMulti_(self,p):
         if self._n==0 or p==0:return 0
         if self._p-p<=0:
             nSelected=self._n
             self._n=0
             self._p=0
             return nSelected
-        nSelected=self.Sample(self._n,NP.float64(p)/self._p)
+        nSelected=self.Sample_(self._n,NP.float64(p)/self._p)
         self._p-=p
         self._n-=nSelected
         return nSelected
